@@ -1,0 +1,694 @@
+#load libraries and data
+```{r}
+# Load required libraries
+library(gridExtra)
+library(readxl)
+library(pheatmap)
+library(openxlsx)
+library(tidyverse)
+library(ggvenn)
+library(clusterProfiler)
+library(org.Mm.eg.db) 
+library(viridis)
+library(dplyr)
+library(eulerr)
+library(ggplot2)
+library(qvalue)
+output_dir <- "../Cerebellum Prenatal MeHg/plots"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+#load in Deg data from novogene
+deg_trans <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Novogene/Cere_TvsCere_C_deg.csv")
+head(deg_trans)
+```
+
+#Venn diagram transcriptomics
+```{r}
+Control <- c("C_1", "C_2", "C_3")
+Mehg <- c("M_1", "M_2", "M_3")
+# Filter deg_trans for Control/MeHg (present in at least 3/3 conditions)
+all_Control <- deg_trans %>%
+  filter(
+    rowSums(!is.na(dplyr::select(., all_of(Control))) & dplyr::select(., all_of(Control)) != 0) == 3
+  )
+all_Mehg <- deg_trans %>%
+  filter(
+    rowSums(!is.na(dplyr::select(., all_of(Mehg))) & dplyr::select(., all_of(Mehg)) != 0) == 3
+  )
+# Prepare data for the Venn diagram
+venn_data <- list(
+  Control = all_Control$gene_id,
+  Mehg = all_Mehg$gene_id
+)
+fit <- euler(venn_data)
+venn_plot <- plot(
+  fit,
+  quantities = T,
+  fill = c('#C03A76', '#FECD90'),
+  labels = NA,  # Remove labels from inside the diagram
+  main = "Proportional Venn Diagram"
+)
+png(file.path(output_dir, "venn_diagram_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(venn_plot)
+dev.off()
+```
+
+#Volcano plot transcriptomics
+```{r}
+log2FC_threshold <- 0      # Log2 fold change threshold
+p_value_threshold <- 0.05    # P-value threshold
+
+# Create a new column for significance categorization
+deg_trans <- deg_trans %>%
+  mutate(
+    diffexp = case_when(
+      padj < p_value_threshold & log2FoldChange > log2FC_threshold ~ "UP",
+      padj < p_value_threshold & log2FoldChange < -log2FC_threshold ~ "DOWN",
+      TRUE ~ "NO"
+    )
+  )
+# Create the volcano plot
+volcano_plot <-ggplot(deg_trans, aes(x = log2FoldChange, y = -log10(padj), col = diffexp)) +
+  coord_cartesian(ylim = c(0, 15), xlim = c(-7, 7)) +
+  geom_point( size = 2, stroke = 0) +      
+  theme_classic() +
+  scale_color_manual(
+    values = c("UP" = "#e85362", "DOWN" = "#3f0f72", "NO" = "grey"),
+    labels = c("Downregulated", "Not Significant", "Upregulated")
+  ) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10(p-value)",
+    color = "Significance"
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # Horizontal line for p-value cutoff
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black")        # Vertical lines for log2FC cutoff
+png(file.path(output_dir, "volcano_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(volcano_plot)
+dev.off()
+```
+
+#heatmap for DEGs transcriptomics
+```{r}
+deg_trans <- subset(deg_trans, padj <= 0.05)
+default_palette <- colorRampPalette(viridis::plasma(20))(200)
+heatmap_data <- deg_trans[, c("C_1", "C_2", "C_3", "M_1", "M_3","M_2")]
+column_order <- c("C_1", "C_2", "C_3", "M_1", "M_3","M_2")  
+heatmap_data <- heatmap_data[, column_order]
+colnames(heatmap_data) <- c("Control female", "Control female", "Control male", "MeHg female", "MeHg female","MeHg male")
+# Generate the heatmap with ordered columns
+heatmap_plot <- pheatmap(heatmap_data,
+         scale = "row",
+         clustering_distance_rows = "euclidean",
+         clustering_method = "complete",
+         show_rownames = FALSE,
+         show_colnames = TRUE,
+         fontsize_row = 10,
+         cluster_cols = FALSE,  # Turn off clustering for columns
+         color = default_palette)
+png(file.path(output_dir, "heatmap_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(heatmap_plot)
+dev.off()
+```
+
+#read in novogene KEGG data
+```{r}
+KEGG_up <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Novogene/Cere_TvsCere_C.up_KEGGenrich_significant.csv")
+KEGG_down <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Novogene/Cere_TvsCere_C.down_KEGGenrich_significant.csv")
+KEGG_up$qvalue <- p.adjust(KEGG_up$padj, method = "BH")
+KEGG_down$qvalue <- p.adjust(KEGG_down$padj, method = "BH")
+# Sort the data by padj (or qvalue, depending on your preference)
+KEGG_up_sorted <- KEGG_up[order(KEGG_up$qvalue, decreasing = FALSE),]
+KEGG_down_sorted <- KEGG_down[order(KEGG_down$qvalue, decreasing = FALSE),]
+# Get the top 10 KEGG pathways by smallest p-value (most significant)
+top_KEGG_up <- head(KEGG_up_sorted, 10)
+top_KEGG_down <- head(KEGG_down_sorted, 10)
+
+KEGG_down_plot <- ggplot(top_KEGG_down, aes(x = reorder(Description, padj), y = -log10(padj), size = Count, color = qvalue)) +
+  geom_point() +
+  coord_flip() +
+  labs(
+    title = "Top 10 Downregulated KEGG Pathways",
+    x = "KEGG Pathway",
+    y = "-Log10(Adjusted P-value)",
+    size = "Gene Count",
+    color = "qvalue"
+  ) +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  scale_color_gradientn(colors = viridis::plasma(10)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5)
+  )
+KEGG_up_plot <-ggplot(top_KEGG_up, aes(x = reorder(Description, padj), y = -log10(padj), size = Count, color = qvalue)) +
+  geom_point() +
+  coord_flip() +
+  labs(
+    title = "Top 10 Upregulated KEGG Pathways",
+    x = "KEGG Pathway",
+    y = "-Log10(Adjusted P-value)",
+    size = "Gene Count",
+    color = "qvalue"
+  ) +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  scale_color_gradientn(colors = viridis::plasma(10)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5)
+  )
+
+png(file.path(output_dir, "KEGG_up_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_up_plot)
+png(file.path(output_dir, "KEGG_down_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_down_plot)
+dev.off()
+
+KEGG_transcriptomics <- bind_rows(KEGG_up, KEGG_down)
+```
+
+#load in novogene GO data
+```{r}
+GO_up <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Novogene/Cere_TvsCere_C.up_GOenrich_significant.csv")
+GO_down <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Novogene/Cere_TvsCere_C.down_GOenrich_significant.csv")
+
+top_GO_up_bp <- GO_up %>% filter(Category == "BP") %>% arrange(padj) %>% head(5)
+top_GO_up_mf <- GO_up %>% filter(Category == "MF") %>% arrange(padj) %>% head(5)
+top_GO_up_cc <- GO_up %>% filter(Category == "CC") %>% arrange(padj) %>% head(5)
+top_GO_down_bp <- GO_down %>% filter(Category == "BP") %>% arrange(padj) %>% head(5)
+top_GO_down_mf <- GO_down %>% filter(Category == "MF") %>% arrange(padj) %>% head(5)
+top_GO_down_cc <- GO_down %>% filter(Category == "CC") %>% arrange(padj) %>% head(5)
+
+top_GO_up_combined <- bind_rows(top_GO_up_bp, top_GO_up_mf, top_GO_up_cc)
+top_GO_down_combined <- bind_rows(top_GO_down_bp, top_GO_down_mf, top_GO_down_cc)
+top_GO_up_combined <- top_GO_up_combined[order(top_GO_up_combined$qvalue, decreasing = FALSE),]
+top_GO_down_combined <- top_GO_down_combined[order(top_GO_down_combined$qvalue, decreasing = FALSE),]
+top_GO_up_combined <- top_GO_up_combined %>%
+  mutate(Description = factor(Description, levels = unique(Description[order(qvalue)])))
+top_GO_down_combined <- top_GO_down_combined %>%
+  mutate(Description = factor(Description, levels = unique(Description[order(Category, qvalue)])))
+# Bar plot
+GO_up_plot <- ggplot(top_GO_up_combined, aes(x = Description, y = -log10(padj), fill = Category)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black") +
+  geom_text(aes(label = Count), hjust = 1.5) +  # Display count above bars
+  labs(title = "Top 5 GO Terms Upregulated by Category (BP, CC, MF)",
+       x = "GO Term", y = "-log10(p.adjust)", fill = "Ontology") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  coord_flip() +  # Flip axes for better readability
+  scale_fill_manual(values = c("BP" = "#f0f921", "MF" = "#f89540", "CC" = "#cc4778")) +  # Custom colors for ONTOLOGY
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5),
+    legend.position = "right"
+  )
+# Bar plot
+GO_down_plot <- ggplot(top_GO_down_combined, aes(x = Description, y = -log10(padj), fill = Category)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black") +
+  geom_text(aes(label = Count), hjust = 1.5) +  # Display count above bars
+  labs(title = "Top 5 GO Terms Downregulated by Category (BP, CC, MF)",
+       x = "GO Term", y = "-log10(p.adjust)", fill = "Ontology") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  coord_flip() +  # Flip axes for better readability
+  scale_fill_manual(values = c("BP" = "#f0f921", "MF" = "#f89540", "CC" = "#cc4778")) +  # Custom colors for ONTOLOGY
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5),
+    legend.position = "right"
+  )
+
+png(file.path(output_dir, "GO_up_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(GO_up_plot)
+png(file.path(output_dir, "GO_down_transcriptomics.png"), width = 2400, height = 1600, res = 300)
+print(GO_down_plot)
+dev.off()
+
+
+GO_transcriptomics <- rbind(GO_up, GO_down)
+```
+
+#Load in protein KEGG results and compare
+```{r}
+KEGG_protein <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Rochelle/rochelle kegg updown.csv")
+#add pvalue to protein results 
+KEGG_protein <- KEGG_protein %>%
+  mutate(padj = p.adjust(pvalue, method = "BH"))
+#subset
+KEGG_protein <- subset(KEGG_protein, padj <= 0.05)
+KEGG_protein_ID<- unique(KEGG_protein$X)
+KEGG_transcriptome_ID <- unique(KEGG_transcriptomics$KEGGID)
+
+venn_data <- list(
+  Proteomic = KEGG_protein_ID,
+  Trancriptomics = KEGG_transcriptome_ID
+)
+fit <- euler(venn_data)
+KEGG_venn<- plot(
+  fit,
+  fills = c('#C03A76', '#FECD90'),
+   quantities = T,
+  labels = NULL,
+  main = "Proportional Venn Diagram"
+)
+
+png(file.path(output_dir, "KEGG_venn_compare.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_venn)
+
+overlapping_ids <- intersect(KEGG_protein_ID, KEGG_transcriptome_ID)
+print(overlapping_ids)
+
+# Subset data for the specified pathway IDs
+KEGG_transcriptome_subset <- KEGG_transcriptomics %>% filter(KEGGID %in% overlapping_ids)
+KEGG_protein_subset <- KEGG_protein %>% filter(X %in% overlapping_ids)
+
+# Combine the data frames, adding a 'Type' column to distinguish the datasets
+KEGG_transcriptome_subset$Type <- "Transcriptomics"
+KEGG_protein_subset$Type <- "Proteomics"
+# Retain only the required columns and rename if needed for 
+kegg_transcriptome_clean <- KEGG_transcriptome_subset %>%
+  dplyr::select(
+    Description,
+    padj,
+    Count,
+    qvalue,
+    Type
+  )
+kegg_protein_clean <- KEGG_protein_subset %>%
+  dplyr::select(
+    Description,
+    padj,
+    Count,
+    qvalue,
+    Type
+  )
+
+combined_data <- rbind(kegg_transcriptome_clean, kegg_protein_clean)
+combined_data$Description <- str_remove(combined_data$Description, " - Mus musculus \\(house mouse\\)$")
+
+KEGG_compare <- ggplot(combined_data, aes(x = reorder(Description, padj), y = padj, size = Count, color = qvalue)) +
+  geom_point() +
+  coord_flip() +
+  facet_wrap(~Type, scales = "fixed") + # Use 'fixed' scales to share the y-axis
+  labs(
+    title = "KEGG Pathways (Transcriptomics and Proteomics)",
+    x = "Pathway Description",
+    y = "Adjusted p-value (padj)",
+    color = "qvalue",
+    size = "Gene Count"
+  ) +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  scale_size_continuous(
+    breaks = c(4, 10, 25, 70)) +
+  scale_color_gradientn(colors = viridis::plasma(10)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5),
+    strip.text = element_text(size = 14, face = "bold") # Adjust facet label styling
+  )
+png(file.path(output_dir, "KEGG_compare.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_compare)
+dev.off()
+```
+
+#Load in protein GO results and compare
+```{r}
+GO_protein <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Rochelle/rochelle go updown.csv")
+#add pvalue to protein results 
+GO_protein <- GO_protein %>%
+  mutate(padj = p.adjust(pvalue, method = "BH"))
+#subset
+GO_protein <- subset(GO_protein, padj <= 0.05)
+
+# Filter GO terms by category
+GO_protein_BP <- GO_protein %>% filter(Category == "BP") %>% pull(X)
+GO_protein_CC <- GO_protein %>% filter(Category == "CC") %>% pull(X)
+GO_protein_MF <- GO_protein %>% filter(Category == "MF") %>% pull(X)
+
+GO_transcriptomics_BP <- GO_transcriptomics %>% filter(Category == "BP") %>% pull(GOID)
+GO_transcriptomics_CC <- GO_transcriptomics %>% filter(Category == "CC") %>% pull(GOID)
+GO_transcriptomics_MF <- GO_transcriptomics %>% filter(Category == "MF") %>% pull(GOID)
+
+
+# Ensure there are no duplicates in the lists
+GO_protein_BP <- unique(GO_protein_BP)
+GO_transcriptomics_BP <- unique(GO_transcriptomics_BP)
+
+GO_protein_CC <- unique(GO_protein_CC)
+GO_transcriptomics_CC <- unique(GO_transcriptomics_CC)
+
+GO_protein_MF <- unique(GO_protein_MF)
+GO_transcriptomics_MF <- unique(GO_transcriptomics_MF)
+
+# Create Venn data without duplicates
+venn_data_BP <- list(Proteomic = GO_protein_BP, Transcriptomic = GO_transcriptomics_BP)
+venn_data_CC <- list(Proteomic = GO_protein_CC, Transcriptomic = GO_transcriptomics_CC)
+venn_data_MF <- list(Proteomic = GO_protein_MF, Transcriptomic = GO_transcriptomics_MF)
+
+# Create Euler diagrams
+fit_BP <- euler(venn_data_BP)
+fit_CC <- euler(venn_data_CC)
+fit_MF <- euler(venn_data_MF)
+
+# Plot each Euler diagram
+plot_BP <- plot(fit_BP, fills = c('#C03A76', '#FECD90'), quantities = T, labels = NULL, main = "BP")
+plot_CC <- plot(fit_CC, fills = c('#C03A76', '#FECD90'), quantities = T, labels = NULL, main = "CC")
+plot_MF <- plot(fit_MF, fills = c('#C03A76', '#FECD90'), quantities = T, labels = NULL, main = "MF")
+
+GO_compare_qauntity <- grid.arrange(plot_BP, plot_CC, plot_MF, nrow = 1)
+
+# Save the plot as a PNG file
+png(file.path(output_dir, "GO_compare.png"), width = 1800, height = 800, res = 300)
+grid.draw(GO_compare_qauntity)  # Draw the grid-based plot
+dev.off()
+```
+####### MY ANALYSIS
+#KEGG (not from novogene)
+```{r}
+upregulated <- subset(deg_trans, log2FoldChange > 0 & padj < 0.05)
+downregulated <- subset(deg_trans, log2FoldChange < 0 & padj < 0.05)
+
+up_gene_list <- upregulated$gene_id
+up_entrez_ids <- bitr(up_gene_list,
+                      fromType = "ENSEMBL",
+                      toType = "ENTREZID",
+                      OrgDb = org.Mm.eg.db)
+upregulated <- merge(upregulated, up_entrez_ids, by.x = "gene_id", by.y = "ENSEMBL")
+up_entrez_gene_list <- upregulated$ENTREZID
+
+kegg_up_results <- enrichKEGG(gene = up_entrez_gene_list,
+                              organism = "mmu",       # Mouse organism code
+                              pAdjustMethod = "BH",   # Pathway significance threshold
+                              qvalueCutoff = 0.05)   # FDR threshold
+
+down_gene_list <- downregulated$gene_id
+down_entrez_ids <- bitr(down_gene_list,
+                        fromType = "ENSEMBL",
+                        toType = "ENTREZID",
+                        OrgDb = org.Mm.eg.db)
+
+downregulated <- merge(downregulated, down_entrez_ids, by.x = "gene_id", by.y = "ENSEMBL")
+down_entrez_gene_list <- downregulated$ENTREZID
+
+kegg_down_results <- enrichKEGG(gene = down_entrez_gene_list,
+                                organism = "mmu",       # Mouse organism code
+                                pAdjustMethod = "BH",   # Adjust p-values
+                                pvalueCutoff = 0.05,    # Pathway significance threshold
+                                qvalueCutoff = 0.05)   # FDR threshold
+
+kegg_down_results <- data.frame(kegg_down_results@result)
+kegg_up_results <- data.frame(kegg_up_results@result)
+# Sort the data by padj (or qvalue, depending on your preference)
+KEGG_up_sorted <- kegg_up_results[order(kegg_up_results$qvalue, decreasing = FALSE),]
+KEGG_down_sorted <- kegg_down_results[order(kegg_down_results$qvalue, decreasing = FALSE),]
+# Get the top 10 KEGG pathways by smallest p-value (most significant)
+top_KEGG_up <- head(KEGG_up_sorted, 10)
+top_KEGG_down <- head(KEGG_down_sorted, 10)
+
+KEGG_down_plot <- ggplot(top_KEGG_down, aes(x = reorder(Description, p.adjust), y = -log10(p.adjust), size = Count, color = qvalue)) +
+  geom_point() +
+  coord_flip() +
+  labs(
+    title = "Top 10 Downregulated KEGG Pathways",
+    x = "KEGG Pathway",
+    y = "-Log10(Adjusted P-value)",
+    size = "Gene Count",
+    color = "qvalue"
+  ) +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  scale_color_gradientn(colors = viridis::plasma(10)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5)
+  )
+KEGG_up_plot <-ggplot(top_KEGG_up, aes(x = reorder(Description, p.adjust), y = -log10(p.adjust), size = Count, color = qvalue)) +
+  geom_point() +
+  coord_flip() +
+  labs(
+    title = "Top 10 Upregulated KEGG Pathways",
+    x = "KEGG Pathway",
+    y = "-Log10(Adjusted P-value)",
+    size = "Gene Count",
+    color = "qvalue"
+  ) +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  scale_color_gradientn(colors = viridis::plasma(10)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5)
+  )
+
+png(file.path(output_dir, "KEGG_up_transcriptomics__myanalysis.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_up_plot)
+png(file.path(output_dir, "KEGG_down_transcriptomics__myanalysis.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_down_plot)
+dev.off()
+
+KEGG_transcriptomics <- bind_rows(kegg_up_results, kegg_down_results)
+```
+#GO (not from novogene)
+```{r}
+upregulated <- subset(deg_trans, log2FoldChange > 0 & padj < 0.05)
+downregulated <- subset(deg_trans, log2FoldChange < 0 & padj < 0.05)
+
+up_gene_list <- upregulated$gene_id
+up_entrez_ids <- bitr(up_gene_list,
+                      fromType = "ENSEMBL",
+                      toType = "ENTREZID",
+                      OrgDb = org.Mm.eg.db)
+upregulated <- merge(upregulated, up_entrez_ids, by.x = "gene_id", by.y = "ENSEMBL")
+up_entrez_gene_list <- upregulated$ENTREZID
+down_gene_list <- downregulated$gene_id
+down_entrez_ids <- bitr(down_gene_list,
+                        fromType = "ENSEMBL",
+                        toType = "ENTREZID",
+                        OrgDb = org.Mm.eg.db)
+
+downregulated <- merge(downregulated, down_entrez_ids, by.x = "gene_id", by.y = "ENSEMBL")
+down_entrez_gene_list <- downregulated$ENTREZID
+
+GO_up <- enrichGO(
+  gene          = up_entrez_gene_list,
+  OrgDb         = org.Mm.eg.db,
+  keyType       = "ENTREZID",  # Use "ENTREZID" if your gene list is in Entrez IDs
+  ont           = "ALL",    # GO Ontology: "BP", "MF", "CC", or "ALL"
+  pAdjustMethod = "BH",
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+GO_down <- enrichGO(
+  gene          = down_entrez_gene_list,
+  OrgDb         = org.Mm.eg.db,
+  keyType       = "ENTREZID",  # Use "ENTREZID" if your gene list is in Entrez IDs
+  ont           = "ALL",    # GO Ontology: "BP", "MF", "CC", or "ALL"
+  pAdjustMethod = "BH",
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+GO_down <- data.frame(GO_down@result)
+GO_up <- data.frame(GO_up@result)
+
+top_GO_up_bp <- GO_up %>% filter(ONTOLOGY == "BP") %>% arrange(qvalue) %>% head(5)
+top_GO_up_mf <- GO_up %>% filter(ONTOLOGY == "MF") %>% arrange(qvalue) %>% head(5)
+top_GO_up_cc <- GO_up %>% filter(ONTOLOGY == "CC") %>% arrange(qvalue) %>% head(5)
+top_GO_down_bp <- GO_down %>% filter(ONTOLOGY == "BP") %>% arrange(qvalue) %>% head(5)
+top_GO_down_mf <- GO_down %>% filter(ONTOLOGY == "MF") %>% arrange(qvalue) %>% head(5)
+top_GO_down_cc <- GO_down %>% filter(ONTOLOGY == "CC") %>% arrange(qvalue) %>% head(5)
+
+top_GO_up_combined <- bind_rows(top_GO_up_bp, top_GO_up_mf, top_GO_up_cc)
+top_GO_down_combined <- bind_rows(top_GO_down_bp, top_GO_down_mf, top_GO_down_cc)
+
+top_GO_up_combined <- top_GO_up_combined %>%
+  mutate(Description = factor(Description, levels = unique(Description[order(ONTOLOGY, qvalue)])))
+top_GO_down_combined <- top_GO_down_combined %>%
+  mutate(Description = factor(Description, levels = unique(Description[order(ONTOLOGY, qvalue)])))
+# Bar plot
+GO_up_plot <- ggplot(top_GO_up_combined, aes(x = Description, y = -log10(p.adjust), fill = ONTOLOGY)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black") +
+  geom_text(aes(label = Count), hjust = 1.5) +  # Display count above bars
+  labs(title = "Top 5 GO Terms Upregulated by Category (BP, CC, MF)",
+       x = "GO Term", y = "-log10(p.adjust)", fill = "Ontology") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  coord_flip() +  # Flip axes for better readability
+  scale_fill_manual(values = c("BP" = "#f0f921", "MF" = "#f89540", "CC" = "#cc4778")) +  # Custom colors for ONTOLOGY
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5),
+    legend.position = "right"
+  )
+# Bar plot
+GO_down_plot <- ggplot(top_GO_down_combined, aes(x = Description, y = -log10(p.adjust), fill = ONTOLOGY)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black") +
+  geom_text(aes(label = Count), hjust = 1.5) +  # Display count above bars
+  labs(title = "Top 5 GO Terms Downregulated by Category (BP, CC, MF)",
+       x = "GO Term", y = "-log10(p.adjust)", fill = "Ontology") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  coord_flip() +  # Flip axes for better readability
+  scale_fill_manual(values = c("BP" = "#f0f921", "MF" = "#f89540", "CC" = "#cc4778")) +  # Custom colors for ONTOLOGY
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5),
+    legend.position = "right"
+  )
+
+png(file.path(output_dir, "GO_up_transcriptomics_myanalysis.png"), width = 2400, height = 1600, res = 300)
+print(GO_up_plot)
+png(file.path(output_dir, "GO_down_transcriptomics_myanalysis.png"), width = 2400, height = 1600, res = 300)
+print(GO_down_plot)
+dev.off()
+
+
+GO_transcriptomics <- rbind(GO_up, GO_down)
+```
+
+#Load in protein KEGG results and compare (my KEGG)
+```{r}
+KEGG_protein <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Rochelle/rochelle kegg updown.csv")
+#add pvalue to protein results 
+KEGG_protein <- KEGG_protein %>%
+  mutate(padj = p.adjust(pvalue, method = "BH"))
+#subset
+KEGG_protein <- subset(KEGG_protein, qvalue <= 0.05)
+KEGG_protein_ID<- unique(KEGG_protein$X)
+KEGG_transcriptomics <- subset(KEGG_transcriptomics, qvalue <= 0.05)
+KEGG_transcriptome_ID <- unique(KEGG_transcriptomics$ID)
+
+venn_data <- list(
+  Proteomic = KEGG_protein_ID,
+  Trancriptomics = KEGG_transcriptome_ID
+)
+fit <- euler(venn_data)
+KEGG_venn_mykegg<- plot(
+  fit,
+  fills = c('#C03A76', '#FECD90'),
+   quantities = F,
+  labels = NULL,
+  main = "Proportional Venn Diagram"
+)
+
+png(file.path(output_dir, "KEGG_venn_compare_myanalysis_nolable.png"), width = 2400, height = 1600, res = 300)
+print(KEGG_venn_mykegg)
+
+dev.off()
+
+overlapping_ids <- intersect(KEGG_protein_ID, KEGG_transcriptome_ID)
+print(overlapping_ids)
+
+# Subset data for the specified pathway IDs
+KEGG_transcriptome_subset <- KEGG_transcriptomics %>% filter(ID %in% overlapping_ids)
+KEGG_protein_subset <- KEGG_protein %>% filter(X %in% overlapping_ids)
+
+# Combine the data frames, adding a 'Type' column to distinguish the datasets
+KEGG_transcriptome_subset$Type <- "Transcriptomics"
+KEGG_protein_subset$Type <- "Proteomics"
+# Retain only the required columns and rename if needed for 
+kegg_transcriptome_clean <- KEGG_transcriptome_subset %>%
+  dplyr::select(
+    Description,
+    p.adjust,
+    Count,
+    qvalue,
+    Type
+  )
+kegg_protein_clean <- KEGG_protein_subset %>%
+  dplyr::select(
+    Description,
+    padj,
+    Count,
+    qvalue,
+    Type
+  )
+colnames(kegg_transcriptome_clean)[colnames(kegg_transcriptome_clean) == "p.adjust"] <- "padj"
+
+combined_data <- rbind(kegg_transcriptome_clean, kegg_protein_clean)
+combined_data$Description <- str_remove(combined_data$Description, " - Mus musculus \\(house mouse\\)$")
+
+KEGG_compare <- ggplot(combined_data, aes(x = reorder(Description, padj), y = padj, size = Count, color = qvalue)) +
+  geom_point() +
+  coord_flip() +
+  facet_wrap(~Type, scales = "fixed") + # Use 'fixed' scales to share the y-axis
+  labs(
+    title = "KEGG Pathways (Transcriptomics and Proteomics)",
+    x = "Pathway Description",
+    y = "Adjusted p-value (padj)",
+    color = "qvalue",
+    size = "Gene Count"
+  ) +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  scale_size_continuous(
+    breaks = c(4, 10, 25, 70)) +
+  scale_color_gradientn(colors = viridis::plasma(10)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.5),
+    strip.text = element_text(size = 14, face = "bold") # Adjust facet label styling
+  )
+png(file.path(output_dir, "KEGG_compare_myanalysis.png"), width = 3000, height = 2000, res = 300)
+print(KEGG_compare)
+dev.off()
+```
+
+
+
+#Load in protein GO results and compare (my GO)
+```{r}
+GO_protein <- read.csv("../Cerebellum Prenatal MeHg/Outputs used/Rochelle/rochelle go updown.csv")
+#add pvalue to protein results 
+GO_protein <- GO_protein %>%
+  mutate(padj = p.adjust(pvalue, method = "BH"))
+#subset
+GO_protein <- subset(GO_protein, qvalue <= 0.05)
+GO_transcriptomics <- subset(GO_transcriptomics, qvalue <= 0.05)
+# Filter GO terms by category
+GO_protein_BP <- GO_protein %>% filter(Category == "BP") %>% pull(X)
+GO_protein_CC <- GO_protein %>% filter(Category == "CC") %>% pull(X)
+GO_protein_MF <- GO_protein %>% filter(Category == "MF") %>% pull(X)
+
+GO_transcriptomics_BP <- GO_transcriptomics %>% filter(ONTOLOGY == "BP") %>% pull(ID)
+GO_transcriptomics_CC <- GO_transcriptomics %>% filter(ONTOLOGY == "CC") %>% pull(ID)
+GO_transcriptomics_MF <- GO_transcriptomics %>% filter(ONTOLOGY == "MF") %>% pull(ID)
+
+
+# Ensure there are no duplicates in the lists
+GO_protein_BP <- unique(GO_protein_BP)
+GO_transcriptomics_BP <- unique(GO_transcriptomics_BP)
+
+GO_protein_CC <- unique(GO_protein_CC)
+GO_transcriptomics_CC <- unique(GO_transcriptomics_CC)
+
+GO_protein_MF <- unique(GO_protein_MF)
+GO_transcriptomics_MF <- unique(GO_transcriptomics_MF)
+
+# Create Venn data without duplicates
+venn_data_BP <- list(Proteomic = GO_protein_BP, Transcriptomic = GO_transcriptomics_BP)
+venn_data_CC <- list(Proteomic = GO_protein_CC, Transcriptomic = GO_transcriptomics_CC)
+venn_data_MF <- list(Proteomic = GO_protein_MF, Transcriptomic = GO_transcriptomics_MF)
+
+# Create Euler diagrams
+fit_BP <- euler(venn_data_BP)
+fit_CC <- euler(venn_data_CC)
+fit_MF <- euler(venn_data_MF)
+
+# Plot each Euler diagram
+plot_BP <- plot(fit_BP, fills = c('#C03A76', '#FECD90'), quantities = F, labels = NULL, main = "BP")
+plot_CC <- plot(fit_CC, fills = c('#C03A76', '#FECD90'), quantities = F, labels = NULL, main = "CC")
+plot_MF <- plot(fit_MF, fills = c('#C03A76', '#FECD90'), quantities = F, labels = NULL, main = "MF")
+
+GO_compare_qauntity <- grid.arrange(plot_BP, plot_CC, plot_MF, nrow = 1)
+
+# Save the plot as a PNG file
+png(file.path(output_dir, "GO_compare_myanalysis_nolabel.png"), width = 1800, height = 800, res = 300)
+grid.draw(GO_compare_qauntity)  # Draw the grid-based plot
+dev.off()
+```
+```
+

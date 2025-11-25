@@ -268,14 +268,16 @@ GO_up_plot <- ggplot(top_GO_up_combined, aes(x = Description, y = -log10(p.adjus
   geom_text(aes(label = Count), hjust = 1.5) +  # Display count above bars
   labs(title = "Top 5 GO Terms Upregulated by Category (BP, CC, MF)",
        x = "GO Term", y = "-log10(p.adjust)", fill = "Ontology") +
-  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme_minimal(base_family = "Arial", base_size = 30) +
   coord_flip() +  # Flip axes for better readability
   scale_fill_manual(values = c("BP" = "#f0f921", "MF" = "#f89540", "CC" = "#cc4778")) +  # Custom colors for ONTOLOGY
   theme(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    axis.line = element_line(color = "black", size = 0.5),
-    legend.position = "right"
+    axis.line = element_line(color = "black", size = 0.7),
+    legend.position = "right",
+    axis.text.y = element_text(size=25),
+    axis.text.x = element_text(size=25)
   )
 # Bar plot
 GO_down_plot <- ggplot(top_GO_down_combined, aes(x = Description, y = -log10(p.adjust), fill = ONTOLOGY)) +
@@ -283,14 +285,16 @@ GO_down_plot <- ggplot(top_GO_down_combined, aes(x = Description, y = -log10(p.a
   geom_text(aes(label = Count), hjust = 1.5) +  # Display count above bars
   labs(title = "Top 5 GO Terms Downregulated by Category (BP, CC, MF)",
        x = "GO Term", y = "-log10(p.adjust)", fill = "Ontology") +
-  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme_minimal(base_family = "Arial", base_size = 30) +
   coord_flip() +  # Flip axes for better readability
   scale_fill_manual(values = c("BP" = "#f0f921", "MF" = "#f89540", "CC" = "#cc4778")) +  # Custom colors for ONTOLOGY
   theme(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    axis.line = element_line(color = "black", size = 0.5),
-    legend.position = "right"
+    axis.line = element_line(color = "black", size = 0.7),
+    legend.position = "right",
+    axis.text.y = element_text(size=25),
+    axis.text.x = element_text(size=25)
   )
 
 png(file.path(output_dir, "GO_up_transcriptomics_myanalysis.png"), width = 2400, height = 1600, res = 300)
